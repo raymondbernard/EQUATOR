@@ -1,0 +1,8 @@
+docker run -d -v F:\pythonprograms\equator:/root/.ollama -p 11435:11434 --name ollama ollama/ollama
+
+
+docker run -d -v F:\pythonprograms\equator:/root/.ollama -p 11435:11434 --name ollama ollama/ollama
+
+docker run -d -v F:\pythonprograms\equator:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
+
+docker run -d --gpus=all -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama

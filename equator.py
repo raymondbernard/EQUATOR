@@ -9,13 +9,13 @@ from dotenv import load_dotenv
 from charting import create_performance_chart
 from utils import get_llm_stats, load_all_llm_answers_from_json
 from openai import OpenAI
-
+from groq import Groq
+from bak.unloadOllama import unload_ollama_services, reload_ollama_services
 # import csv
 import sqlite3
 from datetime import datetime  # Correct import
 import pandas as pd
 from IPython.display import display
-
 
 load_dotenv()
 
@@ -99,45 +99,76 @@ def create_template_json(
         json.dump(template_data, json_file, indent=4, ensure_ascii=False)
 
     print(f"Template JSON created/updated: {output_path}")
+def unload_model(model):
+    keep_alive = 0
+    url = "http://localhost:11434/api/generate"
+    payload = json.dumps({
+        "model": model,
+        "keep_alive": keep_alive
+    })
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.post(url, data=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}
+    
+
+def stream_response(response):
+    """
+    Handle streaming response and capture key content.
+    """
+    content = ""
+    for line in response.iter_lines():
+        if line:
+            decoded_line = line.decode('utf-8')
+            print(decoded_line)  # Print each line of the streaming response
+            content += decoded_line
+    return content
 
 
-class OllamaClient(object):
-    def __init__(self, execution_steps):
-        self.local_student = "cosmic-reasoner:latest"
-        self.falcon_evaluator = "llama3.3:latest"
-        self.base_url = "http://localhost:11434"
+class EQUATOR_Client(object):
+    def __init__(self, execution_steps, student_model, ollama_EQUATOR_evaluator_model, groq_EQUATOR_evaluator_model):
+        self.Groq_EQUATOR_evaluator_model = groq_EQUATOR_evaluator_model
+        self.local_student = student_model
+        self.Ollama_EQUATOR_evaluator = ollama_EQUATOR_evaluator_model
+        self.base_url = "http://localhost:11434" # in container 
         self.student_base_url = "http://localhost:11434"
         self.execution_steps = execution_steps
         self.chroma_client = chromadb.PersistentClient(path=".")
 
-    def generate_completion(
-        self, model, prompt, system=None, stream=False, suffix=None, options=None
-    ):
-        url = f"{self.base_url}/api/generate"
-        payload = {"model": model, "prompt": prompt, "stream": stream}
-        if system:
-            payload["system"] = system
-        if suffix:
-            payload["suffix"] = suffix
-        if options:
-            payload["options"] = options
+    # def generate_completion(
+    #     self, model, prompt, system=None, stream=False, suffix=None, options=None
+    # ):
+    #     url = f"{self.base_url}/api/generate"
+    #     payload = {"model": model, "prompt": prompt, "stream": stream}
+    #     if system:
+    #         payload["system"] = system
+    #     if suffix:
+    #         payload["suffix"] = suffix
+    #     if options:
+    #         payload["options"] = options
 
-        try:
-            response = requests.post(url, json=payload)
-            response.raise_for_status()  # Raise an error for bad responses
-            if response.headers.get("Content-Type").startswith("application/json"):
-                return response.json()
-            else:
-                logger.error(
-                    f"Unexpected response content type: {response.headers.get('Content-Type')}"
-                )
-                logger.error(f"Response content: {response.text}")
-                return None
-        except requests.RequestException as e:
-            logger.error(f"Failed to generate completion: {e}")
-            return None
+    #     try:
+    #         response = requests.post(url, json=payload)
+    #         response.raise_for_status()  # Raise an error for bad responses
+    #         if response.headers.get("Content-Type").startswith("application/json"):
+    #             return response.json()
+    #         else:
+    #             logger.error(
+    #                 f"Unexpected response content type: {response.headers.get('Content-Type')}"
+    #             )
+    #             logger.error(f"Response content: {response.text}")
+    #             return None
+    #     except requests.RequestException as e:
+    #         logger.error(f"Failed to generate completion: {e}")
+    #         return None
 
-    def Falcon_Controller(
+    def EQUATOR_Controller(
         self,
         model_path,
         lab,
@@ -150,7 +181,7 @@ class OllamaClient(object):
 
         chroma_client = chromadb.PersistentClient(path=".")  # ChromaDB client
 
-        if local_student == 1:
+        if self.local_student:
             pass
 
         ## Go through the vector db chroma.sqlite3 for all the question and id
@@ -245,41 +276,43 @@ class OllamaClient(object):
         conn.close()
         print("Database connection closed.")
 
-    def generate_chat(self, model, messages, system=None, stream=False):
-        print("line 249, self.evaluation_steps =", self.execution_steps)
-        if "remote_llm_evaluate" in self.execution_steps:
-            url = f"{self.base_url}/api/chat"
-            payload = {"model": model, "messages": messages, "stream": stream}
-        if "local_llm_evaluate" in self.execution_steps:
-            url = f"{self.student_base_url}/api/chat"
-            model = "llama-3B-cosmic"
-            payload = {"model": model, "messages": messages, "stream": stream}
-            print("line 257, payload and model", payload, model)
-        if system:
-            payload["system"] = system
+    # def generate_chat(self, model, messages, system=None, stream=False):
+    #     print("line 249, self.evaluation_steps =", self.execution_steps)
 
-        try:
-            response = requests.post(url, json=payload)
-            response.raise_for_status()  # Raise an error for bad responses
-            if response.headers.get("Content-Type").startswith("application/json"):
-                return response.json()
-            else:
-                logger.error(
-                    f"Unexpected response content type: {response.headers.get('Content-Type')}"
-                )
-                logger.error(f"Response content: {response.text}")
-                return None
-        except requests.RequestException as e:
-            logger.error(f"Failed to generate chat: {e}")
-            return None
+    #     if "ollama_to_openrouter_evaluate" in self.execution_steps:
+    #         url = f"{self.base_url}/api/chat"
+    #         payload = {"model": model, "messages": messages, "stream": stream}
+
+    #     if "local_llm_evaluate" in self.execution_steps:
+    #         url = f"{self.student_base_url}/api/chat"
+    #         model = self.local_student
+    #         payload = {"model": model, "messages": messages, "stream": stream}
+    #         print("line 257, payload and model", payload, model)
+    #     if system:
+    #         payload["system"] = system
+
+    #     try:
+    #         response = requests.post(url, json=payload)
+    #         response.raise_for_status()  # Raise an error for bad responses
+    #         if response.headers.get("Content-Type").startswith("application/json"):
+    #             return response.json()
+    #         else:
+    #             logger.error(
+    #                 f"Unexpected response content type: {response.headers.get('Content-Type')}"
+    #             )
+    #             logger.error(f"Response content: {response.text}")
+    #             return None
+    #     except requests.RequestException as e:
+    #         logger.error(f"Failed to generate chat: {e}")
+    #         return None
 
     def generate_embeddings(self, model, input_text, truncate=True):
-        print("line 277 model ", model)
-        print(
-            "line 279 local_llm_evaluation in self.execution_steps =",
-            self.execution_steps,
-        )
-        if "remote_llm_evaluate" in self.execution_steps:
+        # print("line 277 model ", model)
+        # print(
+        #     "line 279 local_llm_evaluation in self.execution_steps =",
+        #     self.execution_steps,
+        # )
+        if "ollama_to_openrouter_evaluate" or "ollam_to_groq_evaluate" in self.execution_steps:
             url = f"{self.base_url}/api/embed"
             payload = {"model": model, "input": input_text, "truncate": truncate}
             try:
@@ -307,7 +340,7 @@ class OllamaClient(object):
         if "local_llm_evaluate" in self.execution_steps:
             url = f"{self.student_base_url}/api/embed"
             payload = {"model": model, "input": input_text, "truncate": truncate}
-            print("line 311, payload = ", payload)
+            # print("line 311, payload = ", payload)
             try:
                 response = requests.post(url, json=payload)
                 response.raise_for_status()  # Raise an error for bad responses
@@ -408,9 +441,9 @@ class OllamaClient(object):
             logger.error(f"Error adding entry {entry_id} to the vector DB: {e}")
 
     def retrieve_embedding(self, prompt, n_results=1):
-        print("line 411 retrieve embedding prompt  ==", prompt)
+        # print("line 411 retrieve embedding prompt  ==", prompt)
         response = self.generate_embeddings(model="all-minilm", input_text=prompt)
-        print("line 413 Generate Embeddings ==", response)
+        # print("line 413 Generate Embeddings ==", response)
         if not response or "embeddings" not in response:
             logger.error("Failed to retrieve embeddings from the model.")
             return None
@@ -425,6 +458,7 @@ class OllamaClient(object):
             logger.error(f"Error querying vector DB: {e}")
             return None
 
+    
     # Generate student answer
     def student(self, model_path, full_prompt_student, retries=3, delay=2):
         """
@@ -439,8 +473,10 @@ class OllamaClient(object):
             str: The response content from the API.
         """
         model_path = str(model_path)
-        print("line 442 - Model Path = ", model_path)
-        if "remote_llm_evaluate" in execution_steps:
+        # print("line 442 - Model Path = ", model_path)
+        print("line 468 , in Execution steps =", self.execution_steps)
+
+        if "ollama_to_openrouter_evaluate" or "groq_to_openrouter_evaluate" in self.execution_steps:
             api_key = os.environ.get("OPENROUTER_KEY")
             client = OpenAI(
                 base_url="https://openrouter.ai/api/v1",
@@ -480,16 +516,19 @@ class OllamaClient(object):
 
             logger.error("All retry attempts failed")
             return None
+        
+       
+        elif "ollama_to_groq_evaluate" in self.execution_steps:
+            api_key = os.environ.get("GROQ_API_KEY")
+            print("groq api key: " + api_key)
 
-        if "local_llm_evaluate" in execution_steps:
-            client_student = OpenAI(
-                base_url="http://localhost:11434/v1", api_key="ollama"
-            )
+            client_student = Groq(api_key=os.environ.get("GROQ_API_KEY"),)
+
             for attempt in range(retries):
                 try:
                     completion = client_student.chat.completions.create(
                         temperature=0,
-                        model=self.local_student,
+                        model=self.Groq_EQUATOR_evaluator_model,
                         messages=[
                             {
                                 "role": "system",
@@ -510,13 +549,73 @@ class OllamaClient(object):
 
                 except Exception as e:
                     logger.error(
-                        f"Attempt {attempt + 1} failed: Failed to get response from Ollama  API: {e}"
+                        f"Attempt {attempt + 1} failed: Failed to get response from Groq  API: {e}"
                     )
                 if attempt < retries - 1:
                     time.sleep(delay)
 
             logger.error("All retry attempts failed")
             return None
+        
+        elif "groq_to_ollama_evaluate" in self.execution_steps:
+            url = "http://localhost:11434/api/chat"
+            payload = {
+                "model": "llama3.2",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are a student who is being tested, please follow the directions given exactly. You are welcomed to reason through the question "
+                                   + "You must return only your final answer in a JSON Object example {'student_answer':'<My final Answer here>'}",
+                    },
+                    {"role": "user", "content": warning_prompt + full_prompt_student},
+                ]
+            }
+            for attempt in range(retries):
+                try:
+                    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, stream=True)
+                    response.raise_for_status()
+                    
+                    complete_message = ""
+                    for line in response.iter_lines():
+                        if line:
+                            chunk = json.loads(line.decode('utf-8'))
+                            complete_message += chunk["message"]["content"]
+                            if chunk.get("done"):
+                                break
+
+                    if complete_message:
+                        return {"student_answer": complete_message}
+                    else:
+                        logger.warning(f"Attempt {attempt + 1} failed: Missing 'student_answer' in response")
+
+                except requests.RequestException as e:
+                    logger.error(f"Attempt {attempt + 1} failed: {e}")
+
+                if attempt < retries - 1:
+                    time.sleep(delay)
+
+            logger.error("All retry attempts failed")
+            return None
+
+        # else:
+        #     logger.warning("Execution step 'ollama_to_groq_evaluate' not found in execution_steps.")
+        #     return None
+        
+
+                    # models = ["llama3.2:latest", "all-minilm:latest"]
+
+                    # for model in models:
+                    #     result = unload_model(model)
+                    #     print(json.dumps(result, indent=4))
+                    # time.sleep(5)
+
+                    # unload_ollama_services()
+
+                    # time.sleep(5)
+                    # reload_ollama_services()
+                    # time.sleep(5)
+
+        
 
     def extract_score_from_string(self, response_string):
         # Regular expressions to match different patterns that indicate a score
@@ -555,9 +654,9 @@ class OllamaClient(object):
         return None
 
     def call_evaluator(self, model_path, prompt):
-        print("line 558 question for student look up in vector db == ", prompt)
+        # print("line 558 question for student look up in vector db == ", prompt)
         results = self.retrieve_embedding(prompt)
-        print("line 560 retrieve embeddings =", results)
+        # print("line 560 retrieve embeddings =", results)
         if results is None:
             logger.error("Failed to retrieve similar documents.")
             return None
@@ -577,8 +676,8 @@ class OllamaClient(object):
             f"Question for Student: {prompt}\n"
             f"Final Answer = {{'student_answer': '<My final Answer>'}}"
         )
-        print("line 580 full prompt for student to answer  =", full_prompt_student)
-        print("line 581  = model_path : ", model_path)
+        # print("line 580 full prompt for student to answer  =", full_prompt_student)
+        # print("line 581  = model_path : ", model_path)
 
         student_answer = self.student(model_path, full_prompt_student)
         if not student_answer:
@@ -611,33 +710,66 @@ class OllamaClient(object):
         # response = self.generate_chat(
         #     model="llama3.3", messages=evaluator_system_prompt, stream=False
         # )
-        falcon_client = OpenAI(base_url="http://localhost:11434/v1/", api_key="ollama")
-        completion_eval = falcon_client.chat.completions.create(
-            temperature=0,
-            model=self.falcon_evaluator,
-            messages=evaluator_system_prompt,
-        )
 
-        response_eval = completion_eval.choices[0].message.content
-        print("line 622 response_eval =", response_eval)
-        print("line 623 completion_eval =", completion_eval)
+        if "ollama_to_openrouter_evaluate" or "ollama_to_groq_evaluate" in execution_steps:
+            EQUATOR_client = OpenAI(base_url="http://localhost:11434/v1/", api_key="ollama")
+            completion_eval = EQUATOR_client.chat.completions.create(
+                temperature=0,
+                model=self.Ollama_EQUATOR_evaluator,
+                messages=evaluator_system_prompt,
+            )
 
-        
-        if response_eval:
-            logger.info(f"Evaluator Full Response Line 624 {response_eval}")
-            # if "choices" in response_eval and len(response_eval["choices"]) > 0:
-            #     evaluator_response = response_eval["choices"][0]["content"]
-            # elif "message" in response_eval and "content" in response_eval["message"]:
-            #     evaluator_response = response_eval["message"]["content"]
-            # else:
-            #     logger.error("Failed to get evaluator response.")
-            #     return None
-            # logger.info(f"Evaluator Response: {evaluator_response}")
+            response_eval = completion_eval.choices[0].message.content
+            # print("line 622 response_eval =", response_eval)
+            # print("line 623 completion_eval =", completion_eval)
 
-            return student_answer, response_eval
-        else:
-            logger.error("Failed to get evaluator response.")
-            return None
+            
+            if response_eval:
+                logger.info(f"Evaluator Full Response Line 624 {response_eval}")
+                # if "choices" in response_eval and len(response_eval["choices"]) > 0:
+                #     evaluator_response = response_eval["choices"][0]["content"]
+                # elif "message" in response_eval and "content" in response_eval["message"]:
+                #     evaluator_response = response_eval["message"]["content"]
+                # else:
+                #     logger.error("Failed to get evaluator response.")
+                #     return None
+                # logger.info(f"Evaluator Response: {evaluator_response}")
+
+                return student_answer, response_eval
+            else:
+                logger.error("Failed to get evaluator response.")
+                return None
+            
+        if "groq_to_openrouter" or "gorq_to_ollama_evaluate" in execution_steps:
+
+            api_key = os.environ.get("GROQ_API_KEY")
+            EQUATOR_client = OpenAI(base_url="https://api.groq.com/openai/v1/models", api_key=api_key)
+            completion_eval = EQUATOR_client.chat.completions.create(
+                temperature=0,
+                model=self.Groq_EQUATOR_evaluator_model,
+                messages=evaluator_system_prompt,
+            )
+
+            response_eval = completion_eval.choices[0].message.content
+            # print("line 622 response_eval =", response_eval)
+            # print("line 623 completion_eval =", completion_eval)
+
+            
+            if response_eval:
+                logger.info(f"Evaluator Full Response Line 624 {response_eval}")
+                # if "choices" in response_eval and len(response_eval["choices"]) > 0:
+                #     evaluator_response = response_eval["choices"][0]["content"]
+                # elif "message" in response_eval and "content" in response_eval["message"]:
+                #     evaluator_response = response_eval["message"]["content"]
+                # else:
+                #     logger.error("Failed to get evaluator response.")
+                #     return None
+                # logger.info(f"Evaluator Response: {evaluator_response}")
+
+                return student_answer, response_eval
+            else:
+                logger.error("Failed to get evaluator response.")
+                return None
 
     def VectorDB_Controller(self, keepVectorDB):
         if not keepVectorDB:
@@ -663,15 +795,19 @@ class OllamaClient(object):
                 }
                 conversations.append(parsed_entry)
             logger.info(conversations)
-            OllamaClient.create_vector_db(conversations)
-
+            EQUATOR_Client.create_vector_db(self,conversations)
 
 if __name__ == "__main__":
+
     execution_steps = [
-        "local_llm_evaluate",
-        # "remote_llm_evaluate",
+        # "ollama_to_groq_evaluate", # working
+        # "ollama_to_openroute",
+        "groq_to_ollama_evaluate"
+        # "groq_to_openrouter_evaluate",
         # "generate_statistics",
+
     ]
+
     # openrouter_models = [
     #     "google/learnlm-1.5-pro-experimental:free",
     #     "liquid/lfm-40b:free",
@@ -689,20 +825,25 @@ if __name__ == "__main__":
         # "qwen/qwen-2-7b-instruct:free",
         # "microsoft/phi-3-medium-128k-instruct:free",
     ]
-    client = OllamaClient(execution_steps)
 
-    local_student = ["RayBernard/cosmic-reasoner:latest"]  # local Ollama clients ]
+    
+    local_student = ["RayBernard4/llama3.2:latest"]  # local Ollama clients ]
+
+    groq_EQUATOR_evaluator_model = "llama-3.3-70b-versatile"
+    ollama_EQUATOR_evaluator_model = "llama3.2:latest"
+    student_model = "llama3.2:latest"
 
     keepVectorDB = True  # Keep vector database
-    client.VectorDB_Controller(keepVectorDB)
-    answer_rounds = 10  # Number of rounds of questions to ask each model
+    
+    answer_rounds = 2  # Number of rounds of questions to ask each model
     benchmark_name = "Bernard"
     # Change to false if you want a new vector db
     # date_now = "2024-11-26"  # datetime.now().strftime('%Y-%m-%d')
     date_now = datetime.now().strftime("%Y-%m-%d")
 
-    print("line 703")
-    if "local_llm_evaluate" in execution_steps:
+    if "groq_to_ollama_evaluate" in execution_steps:
+        client = EQUATOR_Client(execution_steps, student_model, ollama_EQUATOR_evaluator_model, groq_EQUATOR_evaluator_model)
+        client.VectorDB_Controller(keepVectorDB)
         for model in local_student:
             model_path = model
             lab, student_models = extract_model_parts(model)
@@ -713,7 +854,7 @@ if __name__ == "__main__":
             else:
                 print("Model name not found.")
             student_models = [student_models]
-            print("1. GETTING Falcon Evaluator ANSWERS -Local Student")
+            print("1. GETTING EQUATOR Evaluator ANSWERS -Local Student")
             # Change to false if you want a new vector db
             # date_now = "2024-11-26"  # datetime.now().strftime('%Y-%m-%d')
             folder_name = f"{date_now}-{benchmark_name}"
@@ -723,7 +864,7 @@ if __name__ == "__main__":
             for n in range(answer_rounds):
                 print(f"\n----- Round: {n+1} of {answer_rounds} -----")
                 answer_save_path_round = f"{auto_eval_save_path}"
-                client.Falcon_Controller(
+                client.EQUATOR_Controller(
                     model_path,
                     lab,
                     student_models,
@@ -732,17 +873,48 @@ if __name__ == "__main__":
                     prefix_replace="auto_eval-",
                 )
 
-    if "remote_llm_evaluate" in execution_steps:
-        for model in openrouter_models:
+    if "ollama_to_groq_evaluate" in execution_steps:
+        client = EQUATOR_Client(execution_steps, student_model, ollama_EQUATOR_evaluator_model, groq_EQUATOR_evaluator_model)
+        client.VectorDB_Controller(keepVectorDB)
+        for model in local_student:
             model_path = model
-            lab, student_models = extract_model_parts(model)
-            if student_models:
+            lab, student_model = extract_model_parts(model)
+            if student_model:
                 print(f"Extracted Lab name: {lab}")
-
-                print(f"Extracted model name: {student_models}")
+                print(f"Extracted model name: {student_model}")
             else:
                 print("Model name not found.")
-            student_models = [student_models]
+            student_models = [student_model]
+            print("1. GETTING EQUATOR Evaluator ANSWERS -Local Student")
+            # Change to false if you want a new vector db
+            # date_now = "2024-11-26"  # datetime.now().strftime('%Y-%m-%d')
+            folder_name = f"{date_now}-{benchmark_name}"
+            answers_save_path = f"./{folder_name}/llm_outputs"
+            auto_eval_save_path = f"./{folder_name}/auto_eval_outputs"
+            stats_save_path = f"./{folder_name}/tables_and_charts"
+            for n in range(answer_rounds):
+                print(f"\n----- Round: {n+1} of {answer_rounds} -----")
+                answer_save_path_round = f"{auto_eval_save_path}"
+                client.EQUATOR_Controller(
+                    model_path,
+                    lab,
+                    student_models,
+                    answer_save_path_round=answer_save_path_round,
+                    count=n,
+                    prefix_replace="auto_eval-",
+                )
+
+    if "ollama_to_openrouter_evaluate" in execution_steps:
+        for model in openrouter_models:
+            model_path = model
+            lab, student_model = extract_model_parts(model)
+            client = EQUATOR_Client(execution_steps, student_model, ollama_EQUATOR_evaluator_model, groq_EQUATOR_evaluator_model)
+            if student_model:
+                print(f"Extracted Lab name: {lab}")
+                print(f"Extracted model name: {student_model}")
+            else:
+                print("Model name not found.")
+            student_models = [student_model]
             folder_name = f"{date_now}-{benchmark_name}"
             answers_save_path = f"./{folder_name}/llm_outputs"
             auto_eval_save_path = f"./{folder_name}/auto_eval_outputs"
@@ -751,7 +923,7 @@ if __name__ == "__main__":
             for n in range(answer_rounds):
                 print(f"\n----- Round: {n+1} of {answer_rounds} -----")
                 answer_save_path_round = f"{auto_eval_save_path}"
-                client.Falcon_Controller(
+                client.EQUATOR_Controller(
                     model_path,
                     lab,
                     student_models,
@@ -799,3 +971,4 @@ if __name__ == "__main__":
             plt.show()
             all_stats_dfs[chart_title] = stats_df
         print("-- DONE STATS --\n")
+
